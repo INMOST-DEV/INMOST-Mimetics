@@ -26,7 +26,7 @@ typedef Storage::real_array real_array;
 typedef Storage::var_array var_array;
 
 bool print_niter = false; //save file on nonlinear iterations
-bool output_matrix = false;
+bool output_matrix = true;
 bool norne_wells = true;
 
 //data for wells
@@ -227,23 +227,32 @@ int main(int argc,char ** argv)
 					 for(int k = 0; k < NF; ++k) //loop over faces
 					 {
 						 area = faces[k].Area();
+						 assert(area > 0);
 						 faces[k].Barycenter(xf.data());
 						 faces[k].OrientedUnitNormal(cell->self(),n.data());
-						 dist = n.DotProduct(xf-x);
+						 dist = fabs(n.DotProduct(xf-x));
 						 // assemble matrix of directions
 						 R(k,k+1,0,3) = (xf-x);
 						 // assemble matrix of co-normals
 						 NK(k,k+1,0,3) = n*K*area;
 						 L(k,k) =  n.DotProduct(n*K)*area/dist;
+						 assert(L(k,k) > 0);
 						 Areas(k,k) = area;
 					 } //end of loop over faces
 					 //~ W = NK*(NK.Transpose()*R).PseudoInvert(1.0e-12)*NK.Transpose(); //stability part
 					 //~ W+=(rMatrix::Unit(NF) - R*(R.Transpose()*R).CholeskyInvert()*R.Transpose())*
 						//~ (2.0/(static_cast<real>(NF)*volume)*(NK*K.CholeskyInvert()*NK.Transpose()).Trace());
 			 		 
+			 		 rMatrix NKR = NK.Transpose()*R;
+			 		 NKR = NKR.PseudoInvert();
+			 		 rMatrix RLR = R.Transpose()*L*R;
+			 		 RLR = RLR.PseudoInvert();
+			 		 //rMatrix RR = R.Transpose()*R;
+			 		 //RR = RR.PseudoInvert();
 			 		 
-			 		 W = (NK)*((NK).Transpose()*R).Invert()*(NK).Transpose();
-					 W+= L - (L*R)*((L*R).Transpose()*R).Invert()*(L*R).Transpose();
+			 		 W = NK*NKR*NK.Transpose();
+			 		 //~ W+=(rMatrix::Unit(NF) - R*RR*R.Transpose())*2.0/(NF*cell->Volume())*W.Trace();
+					 W+= L - L*R*RLR*R.Transpose()*L;
 					 
 					 //~ W = Areas*W*Areas;
 					 //access data structure for gradient matrix in mesh
@@ -304,6 +313,7 @@ int main(int argc,char ** argv)
             dynamic_variable P(aut,aut.RegisterTag(tag_P,CELL|FACE,unk)); //register pressure as primary unknown
             aut.EnumerateEntries(); //enumerate all primary variables
             std::cout << "Enumeration done, size " << aut.GetLastIndex() - aut.GetFirstIndex() << std::endl;
+            std::cout << "Number of cells: " << m->NumberOfCells() << " faces " << m->NumberOfFaces() << std::endl;
 
             Residual R("",aut.GetFirstIndex(),aut.GetLastIndex());
             Sparse::LockService Locks(aut.GetFirstIndex(),aut.GetLastIndex());
@@ -439,19 +449,19 @@ int main(int argc,char ** argv)
 				//~ R.GetJacobian().Save("A.mtx");
 				//~ R.GetResidual().Save("b.mtx");
 				//Solver S(Solver::INNER_ILU2);
-                Solver S(Solver::INNER_MPTILUC);
-                //~ Solver S(Solver::INNER_MLMPTILUC);
+                //~ Solver S(Solver::INNER_MPTILUC);
+                Solver S(Solver::INNER_MLMPTILUC);
                 //~ Solver S(Solver::K3BIILU2);
 				//Solver S("superlu");
-				S.SetParameter("verbosity","3");
+				S.SetParameter("verbosity","1");
 				S.SetParameter("rescale_iterations", "10");
-                S.SetParameter("relative_tolerance", "1.0e-14");
-                S.SetParameter("absolute_tolerance", "1.0e-12");
+                S.SetParameter("relative_tolerance", "1.0e-12");
+                S.SetParameter("absolute_tolerance", "1.0e-11");
                 //~ S.SetParameter("drop_tolerance", "5.0e-2");
                 //~ S.SetParameter("reuse_tolerance", "2.5e-3");
-                S.SetParameter("drop_tolerance", "1.0e-2");
-                S.SetParameter("reuse_tolerance", "1.0e-4");
-                S.SetParameter("pivot_condition", "20");
+                S.SetParameter("drop_tolerance", "1.0e-4");
+                S.SetParameter("reuse_tolerance", "1.0e-6");
+                S.SetParameter("pivot_condition", "5");
                 double tset = Timer(), titr;
 
                 S.SetMatrix(R.GetJacobian());
@@ -521,6 +531,8 @@ int main(int argc,char ** argv)
                     std::cout << "Unable to solve: " << S.ReturnReason() << std::endl;
                     break;
                 }
+                
+                break; //for linear problem
                 ++nit;
             } while( R.Norm() > 1.0e-4 && nit < 10); //check the residual norm
         }
@@ -573,7 +585,7 @@ int main(int argc,char ** argv)
         tag_W = m->DeleteTag(tag_W);
         tag_WG = m->DeleteTag(tag_WG);
         tag_K = m->DeleteTag(tag_K);
-        tag_BC = m->DeleteTag(tag_BC);
+        if( tag_BC.isValid() ) tag_BC = m->DeleteTag(tag_BC);
         m->RemoveGeometricData(table);
 
         if( m->GetProcessorsNumber() == 1 )
