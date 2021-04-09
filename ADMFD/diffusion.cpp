@@ -26,8 +26,8 @@ typedef Storage::real_array real_array;
 typedef Storage::var_array var_array;
 
 bool print_niter = false; //save file on nonlinear iterations
-bool output_matrix = true;
-bool norne_wells = true;
+bool output_matrix = false;
+bool norne_wells = false;
 
 //data for wells
 Cell cc[3] = {InvalidCell(),InvalidCell(),InvalidCell()};
@@ -535,8 +535,27 @@ int main(int argc,char ** argv)
                 break; //for linear problem
                 ++nit;
             } while( R.Norm() > 1.0e-4 && nit < 10); //check the residual norm
+
+            //compute derivative
+            {
+                rMatrix pF;
+#if defined(USE_OMP)
+#pragma omp for
+#endif
+                for (int q = 0; q < m->CellLastLocalID(); ++q) if (m->isValidCell(q)) //loop over cells
+                {
+                    Cell cell = m->CellByLocalID(q);
+                    ElementArray<Face> faces = cell->getFaces(); //obtain faces of the cell
+                    int NF = (int)faces.size();
+                    pF.Resize(NF, 1);
+                    for (int k = 0; k < NF; ++k)
+                        pF(k, 0) = (P.Value(faces[k]) - P.Value(cell));
+                    tag_PG(cell, 3, 1) = tag_WG(cell, 3, NF) * pF;
+                }
+            }
         }
         std::cout << "Solved problem in " << Timer() - ttt << " seconds with " << nit << " iterations " << std::endl;
+       
 
         if( m->HaveTag("REFERENCE_SOLUTION") )
         {
