@@ -816,7 +816,7 @@ int main(int argc,char ** argv)
 
         { //Main loop for problem solution
             Automatizator aut; // declare class to help manage unknowns
-            Automatizator::MakeCurrent(&aut);
+            //Automatizator::MakeCurrent(&aut);
 			BlockEntry UVW(CELL|FACE);
 			UVW.AddTag(tag_UVW);
 			aut.RegisterEntry(UVW);

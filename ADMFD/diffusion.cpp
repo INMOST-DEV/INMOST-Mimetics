@@ -284,7 +284,7 @@ int main(int argc,char ** argv)
 
         { //Main loop for problem solution
             Automatizator aut; // declare class to help manage unknowns
-            Automatizator::MakeCurrent(&aut);
+            //Automatizator::MakeCurrent(&aut);
             
             MarkerType unk = m->CreateMarker();
             for( int q = 0; q < m->CellLastLocalID(); ++q ) if( m->isValidCell(q) )

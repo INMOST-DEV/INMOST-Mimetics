@@ -625,7 +625,7 @@ int main(int argc,char ** argv)
 				//		tag_Q[m.ElementByLocalID(etype,it)] = 0;
 				
 				
-				Automatizator::MakeCurrent(&aut);
+				//Automatizator::MakeCurrent(&aut);
 				
 #if defined(USE_OMP)
 #pragma omp parallel for
@@ -707,7 +707,7 @@ int main(int argc,char ** argv)
 					}
 				}
 				
-				Automatizator::RemoveCurrent();
+				//Automatizator::RemoveCurrent();
 				
 				//std::cout << "residual: " << R.Norm() << std::endl;
 				

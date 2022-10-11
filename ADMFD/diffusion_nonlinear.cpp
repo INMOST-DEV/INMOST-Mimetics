@@ -260,7 +260,7 @@ int main(int argc,char ** argv)
 
         { //Main loop for problem solution
             Automatizator aut; // declare class to help manage unknowns
-            Automatizator::MakeCurrent(&aut);
+            //Automatizator::MakeCurrent(&aut);
             dynamic_variable P(aut,aut.RegisterTag(tag_P,CELL|FACE)); //register pressure as primary unknown
             aut.EnumerateEntries(); //enumerate all primary variables
             std::cout << "Enumeration done, size " << aut.GetLastIndex() - aut.GetFirstIndex() << std::endl;
