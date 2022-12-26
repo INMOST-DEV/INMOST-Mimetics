@@ -12,7 +12,7 @@ using namespace INMOST;
 #define M_PI 3.141592653589
 #endif
 
-#if defined(USE_MPI)
+#if 0//defined(USE_MPI)
 #define BARRIER MPI_Barrier(MPI_COMM_WORLD);
 #else
 #define BARRIER
@@ -320,6 +320,7 @@ void PrintRS(const rMatrix & A)
 
 int main(int argc,char ** argv)
 {
+	Mesh::Initialize(&argc, &argv);
     Solver::Initialize(&argc,&argv,""); // Initialize the solver and MPI activity
 #if defined(USE_PARTITIONER)
     Partitioner::Initialize(&argc,&argv); // Initialize the partitioner activity
@@ -419,6 +420,18 @@ int main(int argc,char ** argv)
 			0,0,0,1,0,0,
 			0,0,1,0,0,0
 		};
+		const Storage::real vW[] =
+		{
+			1,0,0,0,0,0,
+			0,0,0,0,0,1,
+			0,0,0,0,1,0,
+			0,0,0,0,0,1,
+			0,1,0,0,0,0,
+			0,0,0,1,0,0,
+			0,0,0,0,1,0,
+			0,0,0,1,0,0,
+			0,0,1,0,0,0
+		};
 		const Storage::real viBtB[] =
 		{
 			1,0,0,0.0,0.0,0.0,
@@ -458,11 +471,24 @@ int main(int argc,char ** argv)
 			0, -1,  0,  0,  0,  0,  0,  0,  0,
 			0,  0,  0,  0,  0,  0,  0,  0,  0
 		};
+		const Storage::real vU[] =
+		{
+			1,1,1,
+			1,1,1,
+			1,1,1
+		};
+		const rMatrix IU(vU, 3, 3);
 		const rMatrix B(vB,9,6);
 		const rMatrix iBtB(viBtB,6,6);
 		const rMatrix Curl(vCurl,9,9);
 		const rMatrix I = rMatrix::Unit(3);
 		const rMatrix I9 = rMatrix::Unit(9);
+		const rMatrix O = B * iBtB * B.Transpose();
+		const rMatrix M = I9 - O;
+		const rMatrix W = rMatrix::Make(3, 9,
+			0., 0., 0., 0., 0., -1., 0., 1., 0.,
+			0., 0., 1., 0., 0., 0., -1., 0., 0.,
+			0., -1., 0., 1., 0., 0., 0., 0., 0.);
 		
 		//PrintSV(B);
 		std::cout << "B^T*B" << std::endl;
@@ -476,6 +502,12 @@ int main(int argc,char ** argv)
 		
 		std::cout << "B*B^T" << std::endl;
 		(B*B.Transpose()).Print();
+
+		std::cout << "M" << std::endl;
+		M.Print();
+
+		std::cout << "W*B" << std::endl;
+		(W*B).Print();
 
         { //initialize data
             if( m->HaveTag("ELASTIC_TENSOR") ) // is elasticity tensor already defined on the mesh?
@@ -514,8 +546,9 @@ int main(int argc,char ** argv)
 //#pragma omp parallel
 #endif
 			{
-				rMatrix N, R, L, M(9,9), T, K(9,9), iK(9,9), C(6,6), Q, W1, W2, W3, W3s, U,S,V, w, u, v;
-				rMatrix x(3,1), xf(3,1), n(3,1);
+				rMatrix N, R, L, T, K(9,9), C(6,6), Q, W1, W2, W3, W3s, U,S,V, w, u, v;
+				rMatrix x(3,1), xf(3,1), n(3,1), DNW(3,9);
+				rMatrix RB, NB, iW, iL, NM, IH;
 				Storage::real area; //area of the face
 				//double volume; //volume of the cell
 				Storage::real dist; //distance from cell center to face
@@ -532,7 +565,27 @@ int main(int argc,char ** argv)
 					//get permeability for the cell
 					KTensor(tag_C[cell],K);
 					CTensor(tag_C[cell],C);
-					iK = K.PseudoInvert(1.0e-11);
+					//iK = K.PseudoInvert(1.0e-11);
+					/*
+					std::cout << "K:" << std::endl;
+					K.Print();
+					K.SVD(U, S, V);
+					SVD2Eigen(U, S, V);
+					std::cout << "Eigen: ";
+					for (int k = 0; k < 9; ++k)
+						std::cout << S(k, k) << " ";
+					std::cout << std::endl;
+					std::cout << "Kinv:" << std::endl;
+					K.Invert().Print();
+					std::cout << "Kinv2:" << std::endl;
+					(B*(B.Transpose()*K*B).Invert()*B.Transpose()).Print();
+					*/
+					//std::cout << "iK:" << std::endl;
+					//iK.Print();
+					//exit(-1);
+
+
+					
 					if( !inverse_tensor ) K = K.Invert();
 					//K += rMatrix::Unit(9)*1.0e-6*K.FrobeniusNorm();
 					//PrintSV(K);
@@ -543,7 +596,6 @@ int main(int argc,char ** argv)
 					L.Resize(3*NF,3*NF);
 					//M.Resize(3*NF,3*NF);
 					L.Zero();
-					
 					for(int k = 0; k < NF; ++k) //loop over faces
 					{
 						area = faces[k].Area();
@@ -554,7 +606,8 @@ int main(int argc,char ** argv)
 						R(3*k,3*(k+1),0,9) = I.Kronecker((xf-x).Transpose());
 						// assemble matrix of co-normals
 						
-						L(3*k,3*(k+1),3*k,3*(k+1)) = (area/dist)*(I.Kronecker(n.Transpose())*K*I.Kronecker(n));
+						L(3 * k, 3 * (k + 1), 3 * k, 3 * (k + 1)) = (area / dist) * (I.Kronecker(n.Transpose()) * K * I.Kronecker(n));
+						//L(3 * k, 3 * (k + 1), 3 * k, 3 * (k + 1)) += (area / dist) * 0.5 * (I - n * n.Transpose());
 						
 						N(3*k,3*(k+1),0,9) = area*I.Kronecker(n.Transpose());
 #if defined(USE_OMP)
@@ -572,7 +625,7 @@ int main(int argc,char ** argv)
 					tag_Ws(cell,6,3*NF) = ((R*B*iBtB).Transpose()*N*B).Invert()*(R*B*iBtB).Transpose();
 					tag_W[cell].resize(9*NF*NF);
 					
-					if( true )
+					if( false )
 					{
 						Storage::real alpha = 0;
 						Storage::real beta = alpha;
@@ -584,25 +637,117 @@ int main(int argc,char ** argv)
 					}
 					else
 					{
-						M = B*iBtB*B.Transpose();
-						W1 = (N*B*C)*((N*B*C).Transpose()*R*B*iBtB).Invert()*(N*B*C).Transpose();
-						W2 = L - (L*R*B*iBtB)*((L*R*B*iBtB).Transpose()*R*B*iBtB).Invert()*(L*R*B*iBtB).Transpose();
+						// W R = L R + (N B C B^T - L R)
+						// (W-L) R = N B C B^T - L R
+						// (W-L) R B (B^T B)^{-1} = N B C - L R B (B^T B)^{-1}
+						// W - L = (N B C - L R B (B^T B)^{-1}) ((N B C - L R B (B^T B)^{-1})^T R B (B^T B)^{-1} )^{-1} (N B C - L R B (B^T B)^{-1})^T
+						// W = L + (N B C - L R B (B^T B)^{-1}) ( C / |V| - (B^T B)^{-1} B^T R^T L R B (B^T B)^{-1} )^{-1} (N B C - L R B (B^T B)^{-1})^T
+						// Woodbury: (A + UCV)^{-1} = A^{-1} - A^{-1} U (C^{-1} + V A^{-1} U)^{-1} V A^{-1}
+						// A = C / |V|
+						// U = (B^T B)^{-1} B^T
+						// C = R^T L R
+						// V = B (B^T B)^{-1}
+						// ( C / |V| - (B^T B)^{-1} B^T R^T L R B (B^T B)^{-1} )^{-1} = |V| C^{-1} - |V| C^{-1} (B^T B)^{-1} B^T ((R^T L R)^{-1} + |V| B (B^T B)^{-1} C^{-1} (B^T B)^{-1} B^T)^{-1} B (B^T B)^{-1} |V| C^{-1}
+						// W R = N B C B^T
+						// W R B (B^T B)^{-1} = N B C 
+						// W R B (B^T B)^{-1} B^T = N B C B^T
+						// W R (I -  B (B^T B)^{-1} B^T) = 0
+						// W (R - RB B^T ) = 0
+						// W RB = NB C
+						// W1 = NB * C ( (NB * C).Transpose() * RB )^{-1} (NB * C)^T
+						// W1 = N * B * C * ( C * B^T N^T R * B (B^T B)^{-1} )^{-1} C  * B^T * N^T
+						// W1 = N * B * C * ( C * |V| )^{-1} C  * B^T * N^T
+						// W1 = N * B * C * B^T N^T / |V|
+						// W RB = 0
+						// W RC = 0
+						// RB + RC = 0
+						// W R (B C^{-1} B^T + mu * (I -  B (B^T B)^{-1} B^T)) = N
+						// W1 = N * (N^T R (B C^{-1} B^T + mu * (I -  B (B^T B)^{-1} B^T)))^{-1} N^T
+
 						
+						
+						
+						//M = B*iBtB*B.Transpose();
+						//W1 = (N*B*C)*((N*B*C).Transpose()*R*B*iBtB).Invert()*(N*B*C).Transpose();
+						//W2 = L - (L*R*B*iBtB)*((L*R*B*iBtB).Transpose()*R*B*iBtB).Invert()*(L*R*B*iBtB).Transpose();
+						//W1 = N * (B * C * B.Transpose() + C.Trace() / 9.0 * cell.Volume() * M) * N.Transpose() / cell.Volume();
+
+						//RB = R * B * iBtB;
+						//RC = R * M;
+						//NB = N * B * C * B.Transpose() + R * M;
+						//W1 = NB * (NB.Transpose() * R).Invert() * NB.Transpose();
+						
+						//W1 += (W1.Trace() / (9.0 * NF * NF)) * N * M * N.Transpose();
+						
+						//W1 = (N * B * C - L * RB) * ((N * B * C - L * RB).Transpose() * RB).Invert() * (N * B * C - L * RB).Transpose();
+						//W2 = 2*L - (L * R) * ((L * R).Transpose() * R).Invert() * (L * R).Transpose();
+
+						//W1 = N * (B * C * B.Transpose()) * N.Transpose() / cell.Volume();// -(C.Trace() / 81.0) * N * M * N.Transpose();
+						//W2 = L - (L * R) * ((L * R).Transpose() * R).Invert() * (L * R).Transpose();
+						
+						//K += MatrixUnit<real>(9, K.Trace()/90000.0);
+						//NM = N * M;
+						//IH = NM.Transpose() * H * NM;
+						//IH = IH.Invert();
+						//W1 = L - L * R * M * (R.Transpose()*L*R).Invert() * R.Transpose() * L;
+						//W1 += H - H * NM * IH * NM.Transpose() * H;
+						//W2 = N * K * (N.Transpose() * R).Invert() * N.Transpose();
+						//W2.Zero();
+
+						//W1 = L - L * R * O * (R.Transpose() * L * R).Invert() * R.Transpose() * L;
+						//W2 = N * K * (N.Transpose() * R).Invert() * N.Transpose();
+						
+						W1 = N * K * (N.Transpose() * R).Invert() * N.Transpose();
+						W2 = L - L * R * (R.Transpose() * L * R).Invert() * R.Transpose() * L;
+						//W2 = (N * (K + M) - L * R) * (N.Transpose() * R).Invert() * N.Transpose();
+						//W2 = (N * K - L * R) * (N.Transpose() * R).Invert() * N.Transpose();
+						//W2 = (N * K - L * R) * (R.Transpose() * R).Invert() * R.Transpose();
+
+						//W2 = N * (K + M) * ((K + M) * N.Transpose() * R).Invert() * (K + M) * N.Transpose();
+						//W2 -= N * M * (N.Transpose() * R).Invert() * N.Transpose();
+						//W1 = L;
+						//W2 = (N * K - L * R * M) *(N.Transpose() * R).Invert() * N.Transpose();
+						//W2.Zero();
+						/*
+						{
+							rMatrix Q = (R.Transpose() * N).Invert() * R.Transpose() * (W1 + W2);
+							std::cout << "Q:" << std::endl;
+							Q.Print();
+							std::cout << "W*Q:" << std::endl;
+							(W* Q).Print();
+						}
+						*/
 					}
 					
 					tag_W(cell,3*NF,3*NF) = W1+W2;// + rMatrix::Unit(3*NF)*volume;
-					
-					if(false)if(!K.isSymmetric() )
+
+					/*
+					{
+						iL = L.Invert();
+						RB = R * B * iBtB;
+						NB = N * B;
+						iW = RB * C.Invert() * RB.Transpose() / cell.Volume() + iL - iL * N * (N.Transpose() * iL * N).Invert() * N.Transpose() * iL;
+						tag_W(cell, 3 * NF, 3 * NF) =iW.PseudoInvert(1.0e-10);
+						//std::cout << "iW*W:" << std::endl;
+						//(iW * tag_W(cell, 3 * NF, 3 * NF)).Print();
+						//std::cout << "W*iW:" << std::endl;
+						//(tag_W(cell, 3 * NF, 3 * NF) * iW).Print();
+					}
+					*/
+					if(false)
+					if(!K.isSymmetric() )
 					{
 						std::cout << "K nonsymmetric: " << std::endl;
 						(K-K.Transpose()).Print();
 					}
 					
-					//if( false )
+					if( false )
 					if( !tag_W(cell,3*NF,3*NF).isSymmetric(1.0e-5) )
 					{
 						std::cout << "W nonsymmetric: " << std::endl;
 						(tag_W(cell,3*NF,3*NF)-tag_W(cell,3*NF,3*NF).Transpose()).Print();
+						//std::cout << "iW:" << std::endl;
+						//iW.Print();
 						//std::cout << "(N*C)^T*R" << std::endl;
 						//((N*C).Transpose()*R).Print();
 					}
@@ -624,6 +769,8 @@ int main(int argc,char ** argv)
 					
 					
 				} //end of loop over cells
+
+				/*
 				rMatrix C1(3,3),C2(3,3), iC12sum, C1sum(3,3), C2sum(3,3), CC(3,3), CCI(3,3), CCF(3,3), B_D(3,3), B_N(3,3), B_R(3,1);
 				rMatrix W[2];
 #if defined(USE_OMP)
@@ -746,7 +893,7 @@ int main(int argc,char ** argv)
 						//i_coefs[0] = beta*C1sum*iC12sum;
 					}
 				} //end of loop over faces
-				
+				*/
 			}
             std::cout << "Construct W matrix: " << Timer() - ttt << std::endl;
 			
@@ -1064,13 +1211,15 @@ int main(int argc,char ** argv)
 				
 				//R.GetJacobian().Save("A.mtx",&Text);
 
-				//Solver S(Solver::INNER_MPTILU2);
-                Solver S(Solver::INNER_MPTILUC);
+				//Solver S(Solver::INNER_MPTILUC);
+                Solver S(Solver::INNER_MLMPTILUC);
 				//Solver S("superlu");
-                S.SetParameter("relative_tolerance", "1.0e-14");
-                S.SetParameter("absolute_tolerance", "1.0e-12");
-                S.SetParameter("drop_tolerance", "1.0e-4");
-                S.SetParameter("reuse_tolerance", "1.0e-6");
+				S.SetParameter("verbosity", "2");
+                S.SetParameter("relative_tolerance", "1.0e-10");
+                S.SetParameter("absolute_tolerance", "1.0e-7");
+                S.SetParameter("drop_tolerance", "1.0e-2");
+                S.SetParameter("reuse_tolerance", "1.0e-4");
+				S.SetParameter("pivot_condition", "2.5");
 
                 S.SetMatrix(R.GetJacobian());
 				
@@ -1322,5 +1471,6 @@ int main(int argc,char ** argv)
     Partitioner::Finalize(); // Finalize the partitioner activity
 #endif
     Solver::Finalize(); // Finalize solver and close MPI activity
+	Mesh::Finalize();
     return 0;
 }

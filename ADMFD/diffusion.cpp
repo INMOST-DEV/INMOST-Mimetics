@@ -446,6 +446,17 @@ int main(int argc,char ** argv)
 
                 if( R.Norm() < 1.0e-4 ) break;
 
+
+                if (output_matrix)
+                {
+                    std::cout << "write A.mtx" << std::endl;
+                    R.GetJacobian().Save("A.mtx");//,&Text);
+                    std::cout << "write b.mtx" << std::endl;
+                    R.GetResidual().Save("b.mtx");
+                    std::cout << "write done, solve" << std::endl;
+                }
+
+
 				//~ R.GetJacobian().Save("A.mtx");
 				//~ R.GetResidual().Save("b.mtx");
 				//Solver S(Solver::INNER_ILU2);
@@ -453,30 +464,21 @@ int main(int argc,char ** argv)
                 Solver S(Solver::INNER_MLMPTILUC);
                 //~ Solver S(Solver::K3BIILU2);
 				//Solver S("superlu");
-				S.SetParameter("verbosity","1");
-				S.SetParameter("rescale_iterations", "10");
+				S.SetParameter("verbosity","2");
+				S.SetParameter("rescale_iterations", "6");
                 S.SetParameter("relative_tolerance", "1.0e-12");
                 S.SetParameter("absolute_tolerance", "1.0e-11");
                 //~ S.SetParameter("drop_tolerance", "5.0e-2");
                 //~ S.SetParameter("reuse_tolerance", "2.5e-3");
-                S.SetParameter("drop_tolerance", "1.0e-4");
-                S.SetParameter("reuse_tolerance", "1.0e-6");
-                S.SetParameter("pivot_condition", "5");
+                S.SetParameter("drop_tolerance", "0.05");
+                S.SetParameter("reuse_tolerance", "0.0025");
+                S.SetParameter("pivot_condition", "50");
                 double tset = Timer(), titr;
 
                 S.SetMatrix(R.GetJacobian());
                 
                 tset = Timer() - tset;
                 
-				if( output_matrix )
-				{
-					std::cout << "write A.mtx" << std::endl;
-					R.GetJacobian().Save("A.mtx");//,&Text);
-					std::cout << "write b.mtx" << std::endl;
-					R.GetResidual().Save("b.mtx");
-					std::cout << "write done, solve" << std::endl;
-				}
-				
 				titr = Timer();
 				
 				bool success =  S.Solve(R.GetResidual(),Update);
