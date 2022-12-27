@@ -1,10 +1,12 @@
 project(ADMFD)
 
 add_executable(MFDDIFF diffusion.cpp)
+add_executable(MFDADVDIFF advdiff.cpp)
 add_executable(NMFDDIFF diffusion_nonlinear.cpp)
 add_executable(MFDELAST elastic.cpp)
 list(APPEND EXECS
 	MFDDIFF
+	MFDADVDIFF
 	NMFDDIFF
 	MFDELAST)
 

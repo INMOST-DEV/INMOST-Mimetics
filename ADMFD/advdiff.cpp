@@ -26,7 +26,7 @@ typedef Storage::real_array real_array;
 typedef Storage::var_array var_array;
 
 bool print_niter = false; //save file on nonlinear iterations
-
+bool check_div = false;
 
 //#define OPTIMIZATION
 
@@ -93,12 +93,12 @@ int main(int argc,char ** argv)
         }
 
         // data tags for
-        Tag tag_P;  // Pressure
-        Tag tag_K;  // Diffusion tensor
-        Tag tag_F;  // Forcing term
-        Tag tag_BC; // Boundary conditions
-        Tag tag_W;  // Gradient matrix acting on harmonic points on faces and returning gradient on faces
-		Tag tag_U;  // Normal velocity vector on faces
+        TagReal      tag_P;  // Pressure
+        TagRealArray tag_K;  // Diffusion tensor
+        TagReal      tag_F;  // Forcing term
+        TagRealArray tag_BC; // Boundary conditions
+        TagRealArray tag_W;  // Approximation matrix
+		TagReal      tag_U;  // Normal velocity vector on faces
 
         if( m->GetProcessorsNumber() > 1 ) //skip for one processor job
         { // Exchange ghost cells
@@ -127,7 +127,6 @@ int main(int argc,char ** argv)
                     K[4] = 0.0; //YZ
                     K[5] = 1.0; //ZZ
                 }
-
                 m->ExchangeData(tag_K,CELL,0); //Exchange diffusion tensor
             }
 
@@ -160,15 +159,15 @@ int main(int argc,char ** argv)
 					for(int k = 0; k < m->CellLastLocalID(); ++k) if( m->isValidCell(k) )
 					{
 						real	U, //face normal velocity
-						A, //face area
-						sgn; //sign of the normal
+						        A, //face area
+						        sgn; //sign of the normal
 						Cell c = m->CellByLocalID(k);
 						ElementArray<Face> faces = c.getFaces();
 						real divU = 0.0; //divergence of the velocity
 						for(int q = 0; q < (int)faces.size(); ++q)
 						{
 							sgn = (faces[q].FaceOrientedOutside(c) ? 1 : -1); //retrive sign from orientation
-							U = faces[q].Real(tag_U); //retrive normal velocity
+							U = tag_U[faces[q]]; //retrive normal velocity
 							A = faces[q].Area(); //retrive area
 							divU += U*A*sgn; //compute divergence
 						}
@@ -185,7 +184,7 @@ int main(int argc,char ** argv)
                 //initialize unknowns at boundary
             }
             m->ExchangeData(tag_P,CELL|FACE,0); //Synchronize initial solution with boundary unknowns
-            tag_W = m->CreateTag("nKGRAD",DATA_REAL,CELL,NONE);
+            tag_W = m->CreateTag("W", DATA_REAL, CELL, NONE);
 			
             ttt = Timer();
             //Assemble gradient matrix W on cells
@@ -193,11 +192,13 @@ int main(int argc,char ** argv)
 #pragma omp parallel
 #endif
 			{
-				rMatrix NK, R, Areas, L;
-				rMatrix x(1,3), xf(1,3), n(1,3);
+                std::vector<double> vL;
+				rMatrix N, R, K(3,3);
+				rMatrix xc(1,3), xf(1,3), n(1,3);
 				double area; //area of the face
 				double volume; //volume of the cell
-				double vel;
+				double nu; //normal velocity projection
+                double l1, r1, s1; //parameters
 #if defined(USE_OMP)
 #pragma omp for
 #endif
@@ -209,40 +210,39 @@ int main(int argc,char ** argv)
 					 int NF = (int)faces.size(); //number of faces;
 					 rMatrix W(NF,NF);
 					 volume = cell->Volume(); //volume of the cell
-					 cell->Centroid(x.data());
+					 cell->Centroid(xc.data());
 					 //get permeability for the cell
 					 rMatrix K = rMatrix::FromTensor(cell->RealArrayDF(tag_K).data(),
 													 cell->RealArrayDF(tag_K).size());
-					 NK.Resize(NF,3); //co-normals
+					 N.Resize(NF,3); //co-normals
 					 R.Resize(NF,3); //directions
-					 L.Resize(NF,NF);
-					 Areas.Resize(NF,NF); //areas
-					 Areas.Zero();
+					 vL.resize(NF);
+                     // q = nu * pf + (l1 / r1 + s1) * (pf - p1) + (n^T K - (l1 / r1 + s1) *(xf - x1)) * g
+                     // nu + l1 / r1 + s1 > 0
+                     // s1 > - nu - l1/r1
 					 for(int k = 0; k < NF; ++k) //loop over faces
 					 {
 						 area = faces[k].Area();
-						 faces[k].Centroid(xf.data());
+						 faces[k].Barycenter(xf.data());
 						 faces[k].OrientedUnitNormal(cell->self(),n.data());
+                         if (tag_U.isValid())
+                             nu = tag_U[faces[k]] * (faces[k].FaceOrientedOutside(cell) ? 1 : -1);
+                         else nu = 0.0;
 						 // assemble matrix of directions
-						 R(k,k+1,0,3) = (xf-x)*area;
+                         R(k, k + 1, 0, 3) = xf - xc;
 						 // assemble matrix of co-normals
-						 NK(k,k+1,0,3) = area*n*K;
-						 L(k,k) = area*n.DotProduct(n*K)/n.DotProduct(xf-x);
-						 
-						 if( tag_U.isValid() )
-						 {
-							 vel = faces[k]->Real(tag_U)*(faces[k].FaceOrientedOutside(cell)?1:-1);
-							 if( vel > 0 ) NK(k,k+1,0,3) -= area*vel*(xf-x);
-						 }
+                         N(k, k + 1, 0, 3) = area * n;
+                         l1 = n.DotProduct(n * K);
+                         r1 = n.DotProduct(xf - xc);
+                         s1 = std::max(-nu - l1 / r1, -0.0);
+                         vL[k] = area * (l1 / r1 + s1);
 					 } //end of loop over faces
-					 W = NK*(NK.Transpose()*R).PseudoInvert(1.0e-12)*NK.Transpose(); //stability part
-					 W+= L - (L*R)*((L*R).Transpose()*R).PseudoInvert(1.0e-9)*(L*R).Transpose();
+                     MatrixDiag<double> L(&vL[0], NF);
+					 W = N * K * (N.Transpose()*R).Invert() * N.Transpose(); //stability part
+                     W += L - L * R * (R.Transpose() * L * R).Invert() * R.Transpose() * L;
 					 //access data structure for gradient matrix in mesh
-					 real_array store_W = cell->RealArrayDV(tag_W);
-					 //resize the structure
-					 store_W.resize(NF*NF);
-					 //write down the gradient matrix
-					 std::copy(W.data(),W.data()+NF*NF,store_W.data());
+                     tag_W[cell].resize(NF * NF);
+                     tag_W(cell, NF, NF) = W;
 				 } //end of loop over cells
 			}
             std::cout << "Construct W matrix: " << Timer() - ttt << std::endl;
@@ -263,7 +263,6 @@ int main(int argc,char ** argv)
 
         { //Main loop for problem solution
             Automatizator aut; // declare class to help manage unknowns
-            Automatizator::MakeCurrent(&aut);
             dynamic_variable P(aut,aut.RegisterTag(tag_P,CELL|FACE)); //register pressure as primary unknown
             aut.EnumerateEntries(); //enumerate all primary variables
             std::cout << "Enumeration done, size " << aut.GetLastIndex() - aut.GetFirstIndex() << std::endl;
@@ -305,6 +304,7 @@ int main(int argc,char ** argv)
 				{
 					vMatrix pF; //vector of pressure differences on faces
 					vMatrix FLUX; //computed flux on faces
+                    double nu;
 #if defined(USE_OMP)
 #pragma omp for
 #endif
@@ -319,13 +319,19 @@ int main(int argc,char ** argv)
 						pF.Resize(NF,1);
 						FLUX.Resize(NF,1);
 						
-						for(int k = 0; k < NF; ++k)
-							pF(k,0) = (P(faces[k]) - P(cell));
-						FLUX = W*pF; //fluxes on faces
+                        for (int k = 0; k < NF; ++k)
+                        {
+                            pF(k, 0) = (P(faces[k]) - P(cell));
+                            if (tag_U.isValid())
+                                nu = tag_U[faces[k]] * (faces[k].FaceOrientedOutside(cell) ? 1 : -1);
+                            else nu = 0.0;
+                            FLUX(k, 0) = nu * P(faces[k]);
+                        }
+						FLUX += W*pF; //fluxes on faces
 						if( cell.GetStatus() != Element::Ghost )
 						{
-							for(int k = 0; k < NF; ++k) //loop over faces of current cell
-								R[P.Index(cell)] += FLUX(k,0);//faces[k].Area();
+                            for (int k = 0; k < NF; ++k) //loop over faces of current cell
+                                R[P.Index(cell)] += FLUX(k, 0);
 						}
 						for(int k = 0; k < NF; ++k) //loop over faces of current cell
 						{
@@ -337,8 +343,7 @@ int main(int argc,char ** argv)
 								real_array BC = faces[k].RealArray(tag_BC);
 								R[index] -= BC[0]*P(faces[k]) + BC[1]*FLUX(k,0) - BC[2];
 							}
-							else
-								R[index] -= FLUX(k,0);
+							else R[index] -= FLUX(k,0);
 							Locks.UnLock(index);
 						}
 					} //end of loop over cells
@@ -353,7 +358,7 @@ int main(int argc,char ** argv)
 						 {
 							 Cell cell = m->CellByLocalID(q);
 							 if( cell.GetStatus() == Element::Ghost ) continue;
-							 if( cell->HaveData(tag_F) ) R[P.Index(cell)] += cell->Real(tag_F)*cell->Volume();
+							 if( cell->HaveData(tag_F) ) R[P.Index(cell)] += tag_F[cell]*cell->Volume();
 						 }
 					 }
 				}
