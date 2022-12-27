@@ -4,7 +4,7 @@
 #include <math.h>
 #include <string.h>
 
-
+#undef USE_OMP
 using namespace INMOST;
 
 #ifndef M_PI
@@ -82,7 +82,7 @@ int main(int argc,char ** argv)
         { // prepare geometrical data on the mesh
             ttt = Timer();
             Mesh::GeomParam table;
-            table[CENTROID]    = CELL | FACE; //Compute averaged center of mass
+            table[BARYCENTER]    = CELL | FACE; //Compute averaged center of mass
             table[NORMAL]      = FACE;        //Compute normals
             table[ORIENTATION] = FACE;        //Check and fix normal orientation
             table[MEASURE]     = CELL | FACE; //Compute volumes and areas
@@ -99,6 +99,8 @@ int main(int argc,char ** argv)
         TagRealArray tag_BC; // Boundary conditions
         TagRealArray tag_W;  // Approximation matrix
 		TagReal      tag_U;  // Normal velocity vector on faces
+        TagReal      tag_R;  // Reaction coefficient
+        TagReal      tag_FLUX = m->CreateTag("FLUX", DATA_REAL, FACE, NONE, 1);
 
         if( m->GetProcessorsNumber() > 1 ) //skip for one processor job
         { // Exchange ghost cells
@@ -178,6 +180,9 @@ int main(int argc,char ** argv)
 				}
 			}
 
+            if (m->HaveTag("REACTION"))
+                tag_R = m->GetTag("REACTION");
+
             if( m->HaveTag("BOUNDARY_CONDITION") ) //Is there boundary condition on the mesh?
             {
                 tag_BC = m->GetTag("BOUNDARY_CONDITION");
@@ -188,17 +193,19 @@ int main(int argc,char ** argv)
 			
             ttt = Timer();
             //Assemble gradient matrix W on cells
+            const MatrixUnit<real> I(3);
 #if defined(USE_OMP)
 #pragma omp parallel
 #endif
 			{
-                std::vector<double> vL;
+                std::vector<double> vL, vS;
 				rMatrix N, R, K(3,3);
-				rMatrix xc(1,3), xf(1,3), n(1,3);
+                rMatrix xc(1, 3), xf(1, 3), n(1, 3), U(3, 1), tU(3, 1);
 				double area; //area of the face
 				double volume; //volume of the cell
 				double nu; //normal velocity projection
-                double l1, r1, s1; //parameters
+                double l1, r1, s1, smax, lmax; //parameters
+                double dU;
 #if defined(USE_OMP)
 #pragma omp for
 #endif
@@ -210,36 +217,86 @@ int main(int argc,char ** argv)
 					 int NF = (int)faces.size(); //number of faces;
 					 rMatrix W(NF,NF);
 					 volume = cell->Volume(); //volume of the cell
-					 cell->Centroid(xc.data());
+					 cell->Barycenter(xc.data());
 					 //get permeability for the cell
 					 rMatrix K = rMatrix::FromTensor(cell->RealArrayDF(tag_K).data(),
 													 cell->RealArrayDF(tag_K).size());
+                     //K += MatrixUnit<real>(3, 1.0e-8);
 					 N.Resize(NF,3); //co-normals
 					 R.Resize(NF,3); //directions
-					 vL.resize(NF);
+					 vL.resize(NF, 0.0);
+                     vS.resize(NF, 0.0);
                      // q = nu * pf + (l1 / r1 + s1) * (pf - p1) + (n^T K - (l1 / r1 + s1) *(xf - x1)) * g
                      // nu + l1 / r1 + s1 > 0
                      // s1 > - nu - l1/r1
+                     U.Zero();
+                     for (int k = 0; k < NF; ++k) //loop over faces
+                     {
+                         area = faces[k].Area();
+                         faces[k].Barycenter(xf.data());
+                         faces[k].OrientedUnitNormal(cell->self(),n.data());
+                         if (tag_U.isValid())
+                             nu = tag_U[faces[k]] * (faces[k].FaceOrientedOutside(cell) ? 1 : -1);
+                         else nu = 0.0;
+                         // assemble matrix of directions
+                         R(k, k + 1, 0, 3) = xf - xc;
+                         // assemble matrix of co-normals
+                         N(k, k + 1, 0, 3) = area * n;
+                         // velocity vector
+                         U += area * nu * (xf - xc).Transpose();
+                     }
+                     U = (N.Transpose() * R).Solve(U);
+                     smax = 0;
+                     lmax = 0;
 					 for(int k = 0; k < NF; ++k) //loop over faces
 					 {
 						 area = faces[k].Area();
 						 faces[k].Barycenter(xf.data());
-						 faces[k].OrientedUnitNormal(cell->self(),n.data());
-                         if (tag_U.isValid())
+                         faces[k].OrientedUnitNormal(cell->self(), n.data());
+						 if (tag_U.isValid())
                              nu = tag_U[faces[k]] * (faces[k].FaceOrientedOutside(cell) ? 1 : -1);
                          else nu = 0.0;
-						 // assemble matrix of directions
-                         R(k, k + 1, 0, 3) = xf - xc;
-						 // assemble matrix of co-normals
-                         N(k, k + 1, 0, 3) = area * n;
-                         l1 = n.DotProduct(n * K);
+                         tU = U - n.Transpose() * n.Transpose().DotProduct(U);
+                         dU = std::max(U.DotProduct(tU), 0.0);
+                         //assert(dU >= 0.0);
+						 l1 = n.DotProduct(n * K);
                          r1 = n.DotProduct(xf - xc);
-                         s1 = std::max(-nu - l1 / r1, -0.0);
-                         vL[k] = area * (l1 / r1 + s1);
+                         //s1 = std::max(nu - l1 / r1, 0.0);// +sqrt(dU);
+                         s1 = std::max(nu, 1.0e-9);
+                         assert(!check_nans_infs(s1));
+                         //s1 = fabs(nu);
+                         vL[k] = area * (l1 / r1);
+                         vS[k] = area * s1;
+                         assert(!check_nans_infs(vL[k]));
+                         smax = std::max(smax, vS[k]);
+                         lmax = std::max(lmax, vL[k]);
 					 } //end of loop over faces
-                     MatrixDiag<double> L(&vL[0], NF);
-					 W = N * K * (N.Transpose()*R).Invert() * N.Transpose(); //stability part
-                     W += L - L * R * (R.Transpose() * L * R).Invert() * R.Transpose() * L;
+                     MatrixDiag<double> L(&vL[0], NF), S(&vS[0], NF);
+                     W = N * K * (N.Transpose() * R).Invert() * N.Transpose(); //consistency part
+                     //stability part
+                     //W += (L+S) - (L+S) * R * (R.Transpose() * R).Invert() * R.Transpose();
+                     //if (smax)
+                         //W += S - S * R * (N.Transpose() * R).Invert() * N.Transpose();
+                         //W += S - S * R * (R.Transpose() * R).Invert() * R.Transpose();
+                     //if (lmax)
+                     //W += S;// -S * R * (N.Transpose() * R).Invert() * N.Transpose();
+                     W += S - S * R * (R.Transpose() * R).Invert() * R.Transpose();
+                     //W += smax * (MatrixUnit<real>(NF) - R * (R.Transpose() * R).Invert() * R.Transpose());
+                     W += L - L * R * (R.Transpose() * L * R).PseudoInvert() * R.Transpose() * L;
+                     /*
+                     std::cout << "L:" << std::endl;
+                     L.Print();
+                     std::cout << "R^T L R" << std::endl;
+                     (R.Transpose()* L* R).Print();
+                     std::cout << "(R^T L R)^{-1}" << std::endl;
+                     (R.Transpose()* L* R).Invert().Print();
+                     std::cout << "W:" << std::endl;
+                     W.Print();
+                     std::cout << "K:" << std::endl;
+                     K.Print();
+                     std::cout << "nonsym W:" << std::endl;
+                     (L - L * R * (R.Transpose() * R).Invert() * R.Transpose()).Print();
+                     */
 					 //access data structure for gradient matrix in mesh
                      tag_W[cell].resize(NF * NF);
                      tag_W(cell, NF, NF) = W;
@@ -292,7 +349,7 @@ int main(int argc,char ** argv)
             }
 
             std::cout << "Matrix was annotated" << std::endl;
-			 
+			
             do
 			{
                 R.Clear(); //clean up the residual
@@ -325,9 +382,9 @@ int main(int argc,char ** argv)
                             if (tag_U.isValid())
                                 nu = tag_U[faces[k]] * (faces[k].FaceOrientedOutside(cell) ? 1 : -1);
                             else nu = 0.0;
-                            FLUX(k, 0) = nu * P(faces[k]);
+                            FLUX(k, 0) = nu * faces[k].Area() * P(faces[k]);
                         }
-						FLUX += W*pF; //fluxes on faces
+						FLUX -= W*pF; //fluxes on faces
 						if( cell.GetStatus() != Element::Ghost )
 						{
                             for (int k = 0; k < NF; ++k) //loop over faces of current cell
@@ -342,8 +399,13 @@ int main(int argc,char ** argv)
 							{
 								real_array BC = faces[k].RealArray(tag_BC);
 								R[index] -= BC[0]*P(faces[k]) + BC[1]*FLUX(k,0) - BC[2];
+                                tag_FLUX[faces[k]] = get_value(FLUX(k, 0));
 							}
-							else R[index] -= FLUX(k,0);
+                            else
+                            {
+                                R[index] -= FLUX(k, 0);
+                                tag_FLUX[faces[k]] += get_value(FLUX(k, 0)) * (faces[k].FaceOrientedOutside(cell) ? 1.0 : -1.0) * 0.5;
+                            }
 							Locks.UnLock(index);
 						}
 					} //end of loop over cells
@@ -358,9 +420,21 @@ int main(int argc,char ** argv)
 						 {
 							 Cell cell = m->CellByLocalID(q);
 							 if( cell.GetStatus() == Element::Ghost ) continue;
-							 if( cell->HaveData(tag_F) ) R[P.Index(cell)] += tag_F[cell]*cell->Volume();
+							 if( cell->HaveData(tag_F) ) R[P.Index(cell)] -= tag_F[cell]*cell->Volume();
 						 }
 					 }
+                     if (tag_R.isValid())
+                     {
+#if defined(USE_OMP)
+#pragma omp for
+#endif
+                         for (int q = 0; q < m->CellLastLocalID(); ++q) if (m->isValidCell(q))
+                         {
+                             Cell cell = m->CellByLocalID(q);
+                             if (cell.GetStatus() == Element::Ghost) continue;
+                             if (cell->HaveData(tag_R)) R[P.Index(cell)] += tag_R[cell] * P(cell) * cell->Volume();
+                         }
+                     }
 				}
 				std::cout << "assembled in " << Timer() - tttt << "\t\t\t" << std::endl;
 
@@ -374,9 +448,13 @@ int main(int argc,char ** argv)
                 S.SetParameter("relative_tolerance", "1.0e-14");
                 S.SetParameter("absolute_tolerance", "1.0e-12");
                 S.SetParameter("drop_tolerance", "1.0e-2");
-                S.SetParameter("reuse_tolerance", "1.0e-3");
+                S.SetParameter("reuse_tolerance", "1.0e-4");
+                S.SetParameter("verbosity", "2");
 
                 S.SetMatrix(R.GetJacobian());
+
+                R.GetJacobian().Save("A.mtx", &Text);
+                R.GetJacobian().Save("b.mtx");
 				
                 if( S.Solve(R.GetResidual(),Update) )
                 {
@@ -469,7 +547,7 @@ int main(int argc,char ** argv)
             m->Save("out.vtk");
         else
             m->Save("out.pvtk");
-
+        m->Save("out.pmf");
         delete m; //clean up the mesh
     }
     else
