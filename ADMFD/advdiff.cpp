@@ -198,9 +198,10 @@ int main(int argc,char ** argv)
 #pragma omp parallel
 #endif
 			{
-                std::vector<double> vL, vS;
+                std::vector<double> vL, vS, vM;
 				rMatrix N, R, K(3,3);
                 rMatrix xc(1, 3), xf(1, 3), n(1, 3), U(3, 1), tU(3, 1);
+                rMatrix RLR(3, 3), NR(3, 3), RMR(3, 3);
 				double area; //area of the face
 				double volume; //volume of the cell
 				double nu; //normal velocity projection
@@ -226,6 +227,7 @@ int main(int argc,char ** argv)
 					 R.Resize(NF,3); //directions
 					 vL.resize(NF, 0.0);
                      vS.resize(NF, 0.0);
+                     vM.resize(NF, 0.0);
                      // q = nu * pf + (l1 / r1 + s1) * (pf - p1) + (n^T K - (l1 / r1 + s1) *(xf - x1)) * g
                      // nu + l1 / r1 + s1 > 0
                      // s1 > - nu - l1/r1
@@ -261,42 +263,35 @@ int main(int argc,char ** argv)
                          //assert(dU >= 0.0);
 						 l1 = n.DotProduct(n * K);
                          r1 = n.DotProduct(xf - xc);
-                         //s1 = std::max(nu - l1 / r1, 0.0);// +sqrt(dU);
-                         s1 = std::max(nu, 1.0e-9);
+                         s1 = std::max(nu - l1 / r1, 1.0e-7);// +sqrt(dU);
+                         //s1 = std::max(nu, 0.0);
                          assert(!check_nans_infs(s1));
                          //s1 = fabs(nu);
                          vL[k] = area * (l1 / r1);
                          vS[k] = area * s1;
+                         vM[k] = area * (s1 + l1 / r1 - nu); // coefficient at face unknown
+                         //vM[k] = area;
                          assert(!check_nans_infs(vL[k]));
+                         assert(vL[k] >= 0 && vS[k] >= 0 && vM[k] >= 0);
                          smax = std::max(smax, vS[k]);
                          lmax = std::max(lmax, vL[k]);
 					 } //end of loop over faces
-                     MatrixDiag<double> L(&vL[0], NF), S(&vS[0], NF);
-                     W = N * K * (N.Transpose() * R).Invert() * N.Transpose(); //consistency part
-                     //stability part
-                     //W += (L+S) - (L+S) * R * (R.Transpose() * R).Invert() * R.Transpose();
-                     //if (smax)
-                         //W += S - S * R * (N.Transpose() * R).Invert() * N.Transpose();
-                         //W += S - S * R * (R.Transpose() * R).Invert() * R.Transpose();
-                     //if (lmax)
-                     //W += S;// -S * R * (N.Transpose() * R).Invert() * N.Transpose();
-                     W += S - S * R * (R.Transpose() * R).Invert() * R.Transpose();
-                     //W += smax * (MatrixUnit<real>(NF) - R * (R.Transpose() * R).Invert() * R.Transpose());
-                     W += L - L * R * (R.Transpose() * L * R).PseudoInvert() * R.Transpose() * L;
-                     /*
-                     std::cout << "L:" << std::endl;
-                     L.Print();
-                     std::cout << "R^T L R" << std::endl;
-                     (R.Transpose()* L* R).Print();
-                     std::cout << "(R^T L R)^{-1}" << std::endl;
-                     (R.Transpose()* L* R).Invert().Print();
-                     std::cout << "W:" << std::endl;
-                     W.Print();
-                     std::cout << "K:" << std::endl;
-                     K.Print();
-                     std::cout << "nonsym W:" << std::endl;
-                     (L - L * R * (R.Transpose() * R).Invert() * R.Transpose()).Print();
-                     */
+                     MatrixDiag<double> L(&vL[0], NF), S(&vS[0], NF), M(&vM[0], NF);
+                     NR = (N.Transpose() * R).Invert();
+                     RLR = (R.Transpose() * L * R).PseudoInvert(1.0e-8);
+                     RMR = (R.Transpose() * M * R).PseudoInvert(1.0e-8);
+                     W = N * K * NR * N.Transpose(); //consistency part of diffusion
+                     //stability part of diffusion
+                     W += L - L * R * RLR * R.Transpose() * L;
+                     //stability part of advection
+                     //W += S -S * R * (R.Transpose() * M * R).PseudoInvert() * R.Transpose() * M;
+                     W += S - S * R * RMR * R.Transpose() * M;
+                     //this reduces to unstable symmetric central difference
+                     //W += S - S * R * (R.Transpose() * S * R).PseudoInvert() * R.Transpose() * S;
+                     //mix advection and diffusion stability terms
+                     //W += (L+S) - (L+S) * R * (R.Transpose() * M * R).PseudoInvert() * R.Transpose() * M;
+                     //this does not work, not enough stabilization
+                     //W += M - M * R * (R.Transpose() * M * R).PseudoInvert() * R.Transpose() * M;
 					 //access data structure for gradient matrix in mesh
                      tag_W[cell].resize(NF * NF);
                      tag_W(cell, NF, NF) = W;
