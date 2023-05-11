@@ -200,13 +200,13 @@ int main(int argc,char ** argv)
 			{
                 std::vector<double> vL, vS, vM;
 				rMatrix N, R, K(3,3);
-                rMatrix xc(1, 3), xf(1, 3), n(1, 3);// , U(3, 1), tU(3, 1);
+                rMatrix xc(1, 3), xf(1, 3), n(1, 3), U(3, 1), tU(3, 1);
                 rMatrix RLR(3, 3), NR(3, 3), RMR(3, 3);
 				double area; //area of the face
 				double volume; //volume of the cell
 				double nu; //normal velocity projection
-                double l1, r1, s1, smax, lmax; //parameters
-                //double dU;
+                double l1, r1, s1, l1r, smax, lmax; //parameters
+                double dU;
 #if defined(USE_OMP)
 #pragma omp for
 #endif
@@ -231,7 +231,7 @@ int main(int argc,char ** argv)
                      // q = nu * pf + (l1 / r1 + s1) * (pf - p1) + (n^T K - (l1 / r1 + s1) *(xf - x1)) * g
                      // nu + l1 / r1 + s1 > 0
                      // s1 > - nu - l1/r1
-                     //U.Zero();
+                     U.Zero();
                      for (int k = 0; k < NF; ++k) //loop over faces
                      {
                          area = faces[k].Area();
@@ -245,9 +245,9 @@ int main(int argc,char ** argv)
                          // assemble matrix of co-normals
                          N(k, k + 1, 0, 3) = area * n;
                          // velocity vector
-                        // U += area * nu * (xf - xc).Transpose();
+                         U += area * nu * (xf - xc).Transpose();
                      }
-                     //U = (N.Transpose() * R).Solve(U);
+                     U = (N.Transpose() * R).Solve(U);
                      smax = 0;
                      lmax = 0;
 					 for(int k = 0; k < NF; ++k) //loop over faces
@@ -258,21 +258,24 @@ int main(int argc,char ** argv)
 						 if (tag_U.isValid())
                              nu = tag_U[faces[k]] * (faces[k].FaceOrientedOutside(cell) ? 1 : -1);
                          else nu = 0.0;
-                         //tU = U - n.Transpose() * n.Transpose().DotProduct(U);
-                         //dU = std::max(U.DotProduct(tU), 0.0);
+                         tU = U - n.Transpose() * n.Transpose().DotProduct(U);
+                         dU = std::max(U.DotProduct(tU), 0.0);
+                        
                          //assert(dU >= 0.0);
 						 l1 = n.DotProduct(n * K);
-                         r1 = n.DotProduct(xf - xc);
-                         s1 = std::max(nu - l1 / r1, 0.0);// +sqrt(dU);
+                         r1 = fabs(n.DotProduct(xf - xc)) + 1.0e-20;
+                         l1r = l1 / r1;
+                         //r1 = sqrt((xf - xc).DotProduct(xf - xc));
+                         s1 = std::max(nu - l1r, 0.0) ;
                          //s1 = std::max(nu, 0.0);
                          assert(!check_nans_infs(s1));
                          //s1 = fabs(nu);
-                         vL[k] = area * (l1 / r1);
+                         vL[k] = area * l1r;
                          vS[k] = area * s1;
-                         vM[k] = area * (s1 + l1 / r1 - nu); // coefficient at face unknown
+                         vM[k] = area * std::max(s1 + l1r - nu,0.0); // coefficient at face unknown
                          //vM[k] = area;
                          assert(!check_nans_infs(vL[k]));
-                         assert(vL[k] >= 0 && vS[k] >= 0 && vM[k] >= 0);
+                         //assert(vL[k] >= 0 && vS[k] >= 0 && vM[k] >= 0);
                          smax = std::max(smax, vS[k]);
                          lmax = std::max(lmax, vL[k]);
 					 } //end of loop over faces
@@ -284,8 +287,35 @@ int main(int argc,char ** argv)
                      //stability part of diffusion
                      W += L - L * R * RLR * R.Transpose() * L;
                      //stability part of advection
-                     //W += S -S * R * (R.Transpose() * M * R).PseudoInvert() * R.Transpose() * M;
+                     //W += S;
+                     //W += S - S * R * (R.Transpose() * M * R).PseudoInvert() * R.Transpose() * M;
                      W += S - S * R * RMR * R.Transpose() * M;
+                     //W -= S * R * RMR * R.Transpose() * M;
+                     if( false ) for (int k = 0; k < NF; ++k) //loop over faces
+                     {
+                         area = faces[k].Area();
+                         faces[k].Barycenter(xf.data());
+                         faces[k].OrientedUnitNormal(cell->self(), n.data());
+                         if (tag_U.isValid())
+                             nu = tag_U[faces[k]] * (faces[k].FaceOrientedOutside(cell) ? 1 : -1);
+                         else nu = 0.0;
+                         //tU = U - n.Transpose() * n.Transpose().DotProduct(U);
+                         //dU = std::max(U.DotProduct(tU), 0.0);
+                         //assert(dU >= 0.0);
+                         l1 = n.DotProduct(n * K);
+                         r1 = fabs(n.DotProduct(xf - xc)) + 1.0e-20;
+                         s1 = std::max(nu - l1 / r1, 0.0);// +sqrt(dU);
+                         if (s1)
+                         {
+                             std::fill(vS.begin(), vS.end(), 0.0);
+                             std::fill(vM.begin(), vM.end(), 1.0);
+                             vS[k] = area * s1;
+                             vM[k] = 0.0;
+                             MatrixDiag<double> S(&vS[0], NF), M(&vM[0], NF);
+                             RMR = (R.Transpose() * M * R).PseudoInvert(1.0e-8);
+                             W += S - S * R * RMR * R.Transpose() * M;
+                         }
+                     }
                      //this reduces to unstable symmetric central difference
                      //W += S - S * R * (R.Transpose() * S * R).PseudoInvert() * R.Transpose() * S;
                      //mix advection and diffusion stability terms
@@ -437,14 +467,14 @@ int main(int argc,char ** argv)
 
                 if( R.Norm() < 1.0e-4 ) break;
 
-				Solver S(Solver::INNER_ILU2);
-                //Solver S(Solver::INNER_MPTILUC);
+				//Solver S(Solver::INNER_ILU2);
+                Solver S(Solver::INNER_MPTILUC);
 				//Solver S("superlu");
                 S.SetParameter("relative_tolerance", "1.0e-14");
                 S.SetParameter("absolute_tolerance", "1.0e-12");
-                S.SetParameter("drop_tolerance", "1.0e-2");
-                S.SetParameter("reuse_tolerance", "1.0e-4");
-                S.SetParameter("verbosity", "2");
+                S.SetParameter("drop_tolerance", "1.0e-3");
+                S.SetParameter("reuse_tolerance", "1.0e-5");
+                S.SetParameter("verbosity", "1");
 
                 S.SetMatrix(R.GetJacobian());
 
