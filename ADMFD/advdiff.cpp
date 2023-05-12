@@ -284,17 +284,21 @@ int main(int argc,char ** argv)
                      MatrixDiag<double> L(&vL[0], NF), S(&vS[0], NF), M(&vM[0], NF);
                      NR = (N.Transpose() * R).Invert();
                      RLR = (R.Transpose() * L * R).PseudoInvert(peps);
+                     //RMR = (R.Transpose() * M * R).PseudoInvert(peps);
+                     //RMR = (R.Transpose() * (S + M) * R).PseudoInvert(peps);
                      RMR = (R.Transpose() * M * R).PseudoInvert(peps);
                      W = N * K * NR * N.Transpose(); //consistency part of diffusion
                      //stability part of diffusion
                      W += L - L * R * RLR * R.Transpose() * L;
                      //stability part of advection
-                     Wa = S - S * R * RMR * R.Transpose() * M;
-                     //W += S;
+                     //Wa = S - S * R * RMR * R.Transpose() * M;
+                     //W += S - S * R * NR * N.Transpose();
                      //W += S - S * R * (R.Transpose() * M * R).PseudoInvert() * R.Transpose() * M;
-                     //W += S - S * R * RMR * R.Transpose() * M;
+                     //W += S - (S + M) * R * RMR * R.Transpose() * (S + M) + M * R * NR * N.Transpose();
+                     //W += S;
                      //W -= S * R * RMR * R.Transpose() * M;
-                     if( true ) for (int k = 0; k < NF; ++k) //loop over faces
+                     W += S - S * R * RMR * R.Transpose() * M;
+                     if( false ) for (int k = 0; k < NF; ++k) //loop over faces
                      {
                          area = faces[k].Area();
                          faces[k].Barycenter(xf.data());
@@ -474,8 +478,8 @@ int main(int argc,char ** argv)
 				//Solver S(Solver::INNER_ILU2);
                 Solver S(Solver::INNER_MPTILUC);
 				//Solver S("superlu");
-                S.SetParameter("relative_tolerance", "1.0e-14");
-                S.SetParameter("absolute_tolerance", "1.0e-12");
+                S.SetParameter("relative_tolerance", "1.0e-12");
+                S.SetParameter("absolute_tolerance", "1.0e-10");
                 S.SetParameter("drop_tolerance", "1.0e-4");
                 S.SetParameter("reuse_tolerance", "1.0e-6");
                 S.SetParameter("verbosity", "1");
