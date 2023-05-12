@@ -17,6 +17,8 @@ using namespace INMOST;
 #define BARRIER
 #endif
 
+const double peps = 1.0e-13;
+
 //shortcuts
 typedef Storage::bulk bulk;
 typedef Storage::real real;
@@ -216,7 +218,7 @@ int main(int argc,char ** argv)
 					 Cell cell = m->CellByLocalID(q);
 					 ElementArray<Face> faces = cell->getFaces(); //obtain faces of the cell
 					 int NF = (int)faces.size(); //number of faces;
-					 rMatrix W(NF,NF);
+					 rMatrix W(NF,NF), Wa(NF,NF);
 					 volume = cell->Volume(); //volume of the cell
 					 cell->Barycenter(xc.data());
 					 //get permeability for the cell
@@ -281,17 +283,18 @@ int main(int argc,char ** argv)
 					 } //end of loop over faces
                      MatrixDiag<double> L(&vL[0], NF), S(&vS[0], NF), M(&vM[0], NF);
                      NR = (N.Transpose() * R).Invert();
-                     RLR = (R.Transpose() * L * R).PseudoInvert(1.0e-8);
-                     RMR = (R.Transpose() * M * R).PseudoInvert(1.0e-8);
+                     RLR = (R.Transpose() * L * R).PseudoInvert(peps);
+                     RMR = (R.Transpose() * M * R).PseudoInvert(peps);
                      W = N * K * NR * N.Transpose(); //consistency part of diffusion
                      //stability part of diffusion
                      W += L - L * R * RLR * R.Transpose() * L;
                      //stability part of advection
+                     Wa = S - S * R * RMR * R.Transpose() * M;
                      //W += S;
                      //W += S - S * R * (R.Transpose() * M * R).PseudoInvert() * R.Transpose() * M;
-                     W += S - S * R * RMR * R.Transpose() * M;
+                     //W += S - S * R * RMR * R.Transpose() * M;
                      //W -= S * R * RMR * R.Transpose() * M;
-                     if( false ) for (int k = 0; k < NF; ++k) //loop over faces
+                     if( true ) for (int k = 0; k < NF; ++k) //loop over faces
                      {
                          area = faces[k].Area();
                          faces[k].Barycenter(xf.data());
@@ -312,8 +315,9 @@ int main(int argc,char ** argv)
                              vS[k] = area * s1;
                              vM[k] = 0.0;
                              MatrixDiag<double> S(&vS[0], NF), M(&vM[0], NF);
-                             RMR = (R.Transpose() * M * R).PseudoInvert(1.0e-8);
-                             W += S - S * R * RMR * R.Transpose() * M;
+                             RMR = (R.Transpose() * M * R).PseudoInvert(peps);
+                             W += S;
+                             W -= S * R * RMR * R.Transpose() * M;
                          }
                      }
                      //this reduces to unstable symmetric central difference
@@ -472,8 +476,8 @@ int main(int argc,char ** argv)
 				//Solver S("superlu");
                 S.SetParameter("relative_tolerance", "1.0e-14");
                 S.SetParameter("absolute_tolerance", "1.0e-12");
-                S.SetParameter("drop_tolerance", "1.0e-3");
-                S.SetParameter("reuse_tolerance", "1.0e-5");
+                S.SetParameter("drop_tolerance", "1.0e-4");
+                S.SetParameter("reuse_tolerance", "1.0e-6");
                 S.SetParameter("verbosity", "1");
 
                 S.SetMatrix(R.GetJacobian());
