@@ -1,0 +1,9 @@
+._*
+.svn
+*build*/
+.vscode/*
+
+.DS_Store
+
+/.vs
+/CMakeSettings.json
